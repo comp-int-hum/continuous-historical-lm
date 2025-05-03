@@ -22,7 +22,7 @@ if __name__ == "__main__":
                 if not paras.get(q["para_id"]):
                     work_date = int(q["publication_date"][0:4])
                     if work_date >= args.cutoff_start and work_date < args.cutoff_end:
-                        entry = {"id": q["para_id"], "structure":[[[]],[nltk.sent_tokenize(q["context"])]], "work_date": work_date}
+                        entry = {"id": q["para_id"], "structure":[[[]],[nltk.sent_tokenize(q["context"])]], "year": work_date}
                         paras[q["para_id"]] = entry
 
     with open(args.output, "wt") as j_out:

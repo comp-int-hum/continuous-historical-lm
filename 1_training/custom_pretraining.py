@@ -2,7 +2,7 @@ import os
 from custom import *
 
 # WandB settings
-WANDB_PROJECT = "perspectival_language_models_pretraining"
+WANDB_PROJECT = "continuous_train"
 
 WORK_DIR = f"1_training/work/pretraining/{PROJECT_NAME}"
 ORIGINAL_WORK_DIR = WORK_DIR

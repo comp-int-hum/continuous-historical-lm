@@ -1,11 +1,11 @@
 # RUN settings
 RUN_PRETRAINING = True
 RUN_FINETUNING = False
-RUN_EVALUATION = True
+RUN_EVALUATION = False
 
 # Data settings
-PROJECT_NAME = "test_set"
-DATA = "LOAD_CUSTOM_DATA"# "DATA_PREPARATION" or "LOAD_CUSTOM_DATA"
+PROJECT_NAME = "20_splits"
+DATA = "DATA_PREPARATION"# "DATA_PREPARATION" or "LOAD_CUSTOM_DATA"
 CUSTOM_DATA_DIRECTORY = "custom_data/historical_test_data"
 
 # Evaluation settings

@@ -49,7 +49,7 @@ Export("training_data", training_data)
 
 
 if env["RUN_PRETRAINING"]:
-    SConscript("SConscript_pretraining")
+    SConscript("SConscript_continuous_pretraining")
     Import("pretrained_results")
 else:
     pretrained_results = {}

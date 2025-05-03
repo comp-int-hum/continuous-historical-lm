@@ -50,11 +50,9 @@ if __name__ == "__main__":
  
     with open(args.input, "rt") as input_file, open(args.output, "wt") as output_file:
         for line in tqdm(input_file, desc="Iterating through authors and extracted works"):
-            author_info = json.loads(line)
-            for work in author_info["extracted_works"]:
-                soup = BeautifulSoup(work["raw"], "html.parser")
-                doc_json = {k : v for k, v in author_info.items() if k != "extracted_works"}
-                doc_json["structure"] = get_structure(soup)
-                output_file.write(json.dumps(doc_json) + "\n")
+            work = json.loads(line)
+            soup = BeautifulSoup(work["raw"], "html.parser")
+            work["structure"] = get_structure(soup)
+            output_file.write(json.dumps(work) + "\n")
 
     

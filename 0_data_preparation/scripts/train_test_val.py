@@ -37,21 +37,25 @@ if __name__ == "__main__":
             jline = json.loads(line)
             # each line is a book, with book["structure"] holding a list of chapters, with a list of paragraphs, with a list of sentences
             # the first line is a preface usually so to be safe we skip it
+            year = jline["year"]
+            book_texts = []
             for i, chapter in enumerate(jline["structure"]):
                 if i == 0:
                     continue
                 if args.split_level == "sentence":
                     for paragraph in chapter:
-                        all_texts.extend(paragraph)
+                        book_texts.extend(paragraph)
                 elif args.split_level == "paragraph" or args.split_style == "percent":
                     for paragraph in chapter:
-                        all_texts.append(" ".join(paragraph))
+                        book_texts.append(" ".join(paragraph))
                 elif args.split_level == "chapter":
-                    all_texts.append(" ".join([" ".join(paragraph) for paragraph in chapter]))
+                    book_texts.append(" ".join([" ".join(paragraph) for paragraph in chapter]))
+            book_texts = [{"year": year, "text": text} for text in book_texts if len(text.split()) > 0]
+            all_texts.extend(book_texts)
 
     logging.info(f"Total {args.split_level}: {len(all_texts)}")
 
-    random.shuffle(all_texts)
+    #random.shuffle(all_texts)
 
     
     if args.split_style == "percent":
@@ -63,10 +67,23 @@ if __name__ == "__main__":
         logging.info(f"Dev size: {dev_size}")
         logging.info(f"Test size: {test_size}")
 
-        texts_train = all_texts[:train_size]
-        texts_dev = all_texts[train_size:train_size+dev_size]
-        texts_test = all_texts[train_size+dev_size:]
+        # randomly select train, dev, test without shuffling
+        train_indices = sorted(random.sample(range(len(all_texts)), train_size))
+        remaining_indices = set(range(len(all_texts))) - set(train_indices)
+        dev_indices = sorted(random.sample(list(remaining_indices), dev_size))
+        remaining_indices -= set(dev_indices)
+        test_indices = sorted(list(remaining_indices))
 
+        assert len(train_indices) + len(dev_indices) + len(test_indices) == len(all_texts), "Train, dev, and test indices do not cover all texts"
+        assert len(set(train_indices).intersection(set(dev_indices))) == 0, "Train and dev indices overlap"
+        assert len(set(train_indices).intersection(set(test_indices))) == 0, "Train and test indices overlap"
+        print("generating splits with indices:")
+        texts_train = [all_texts[i] for i in train_indices]
+        texts_dev = [all_texts[i] for i in dev_indices]
+        texts_test = [all_texts[i] for i in test_indices]
+
+    #TODO: count doesnt work for continuous training, because the splitting probably 
+    # will not be randomised.
     elif args.split_style == "count":
 
         def get_n_tok_split(n, paras):

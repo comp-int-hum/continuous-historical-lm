@@ -12,7 +12,7 @@ import os
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", help="text input")
+    parser.add_argument("--input", nargs="+", help="text input")
     parser.add_argument("--output", help="Tokenizer model output")
     parser.add_argument("--model_config", help="Model config which holds max sequence length")
     args, rest = parser.parse_known_args()
@@ -32,7 +32,7 @@ if __name__ == "__main__":
 
     logging.info("Training tokenizer")
     trainer = trainers.BpeTrainer(vocab_size=16000, min_frequency=2, special_tokens=["<pad>", "<s>", "</s>"])
-    tokenizer.train([args.input], trainer)
+    tokenizer.train(args.input, trainer)
 
     logging.info("Saving tokenizer model")
     tokenizer.save(args.output + ".json", pretty=True)

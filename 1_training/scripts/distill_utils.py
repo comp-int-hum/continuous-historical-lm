@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 import numpy as np
 from typing import Any, List, Dict, Union, Optional
 import time
+from torch.profiler import profile, record_function, ProfilerActivity
 
 if is_accelerate_available():
     from accelerate.utils import (
@@ -35,6 +36,7 @@ class DistillationTrainer(Trainer):
         self.teachers = teacher_models
         for teacher in self.teachers:
             # place each teacher on same device as student
+            print(f"Moving teacher model {teacher.config._name_or_path} to device {self.model.device}")
             self._move_model_to_device(teacher, self.model.device)
             teacher.eval()
 
@@ -42,15 +44,16 @@ class DistillationTrainer(Trainer):
         # compute student output
         outputs_student = model(**inputs)
         student_loss = outputs_student.loss
-
         # compute teacher output
+        input_no_labels = {k: v for k, v in inputs.items() if k != "labels"}
         with torch.no_grad():
             all_teacher_logits = []
-            for teacher in self.teachers:
-                outputs_teacher = teacher(**inputs)
-                all_teacher_logits.append(outputs_teacher.logits)
+            for i, teacher in enumerate(self.teachers):
+                l = teacher(**input_no_labels).logits
+                all_teacher_logits.append(l)
             avg_teacher_logits = torch.stack(all_teacher_logits).mean(dim=0)
-
+            #avg.div_(len(self.teachers))
+            #avg_teacher_logits = avg
         # assert size
         assert outputs_student.logits.size() == avg_teacher_logits.size()
 
@@ -73,7 +76,13 @@ class DistillationTrainer(Trainer):
         return (loss, outputs_student) if return_outputs else loss
     
     def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], num_items_in_batch) -> torch.Tensor:
-
+        #with profile(
+        #    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        #    record_shapes=True,
+        #    with_stack=True,
+        #    profile_memory=True,
+        #) as prof:
+        #    with record_function("total_step"):
         model.train()
         inputs = self._prepare_inputs(inputs)
 
@@ -108,12 +117,12 @@ class DistillationTrainer(Trainer):
         self.accelerator.backward(loss, **kwargs)
 
         # Log individual losses
-        self.log({
-            "ce_loss": self.ce_loss.item(),
-            "kl_loss": self.kl_loss.item(),
-            "loss": loss.item()
-        })
-
+        #self.log({
+        #    "ce_loss": self.ce_loss.item(),
+        #    "kl_loss": self.kl_loss.item(),
+        #    "loss": loss.item()
+        #})
+        #print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
         return loss.detach() / self.args.gradient_accumulation_steps
     
     def evaluation_loop(

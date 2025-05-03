@@ -16,8 +16,6 @@ vars.AddVariables(
     # local paths
     ("DATA_ROOT", "", os.path.expanduser("~/corpora")),
     ("GUTENBERG_PATH", "", "${DATA_ROOT}/gutenberg/"),
-
-    ("TIME_SLICES", "", [(1750, 1820), (1820, 1850), (1850, 1880), (1880, 1910), (1910, 1940)]),
     
     # Author and work filtering
     ("P1_THRESH", "", 90),
@@ -42,6 +40,16 @@ vars.AddVariables(
     ("TEST_PORTION", "", 5*(10**6)),
     ("SPLIT_STYLE", "", "count"),
     ("SPLIT_LEVEL", "", "paragraph"),
+
+    # split settings:
+    ("STARTING_YEAR", "", 1750),
+    ("ENDING_YEAR", "", 1940),
+    ("TIME_SLICES", "", []),
+    ("CATEGORY_MODE", "", "TOTAL"), # can be 'TOTAL' or 'INTERVAL'
+    ("SHUFFLE", "", 0),  # 0 for no shuffle, 1 for shuffle
+    ("SORT", "", 1), # 0 for no sorting, 1 for sorting
+    ("TOTAL_SPLITS", "", 50), 
+    ("SPLIT_INTERVAL", "", 1000),
 
     # Steamroller settings
     ("STEAMROLLER_ENGINE", "", ""),
@@ -129,37 +137,82 @@ env = Environment(
                 "--input_tests ${TESTS} "
                 "--output_train ${TARGETS[0]} "
                 "--output_dev ${TARGETS[1]} "
-                "--output_test ${TARGETS[2]}"
+                "--output_test ${TARGETS[2]} "
+                "--random_seed ${RANDOM_SEED} "
+                "--shuffle ${SHUFFLE} "
+                "--sort ${SORT} "
+
             )
         ),
+        "ExtractWorks" : Builder(
+            action = (
+                "python 0_data_preparation/scripts/extract_works.py "
+                "--input ${SOURCES} "
+                "--output ${TARGETS}"
+            )
+        ),
+        "SampleTime" : Builder(
+            action = (
+                "python 0_data_preparation/scripts/sample_time.py "
+                "--input ${SOURCES} "
+                "--output ${TARGETS} "
+                "--start_year ${START_YEAR} "
+                "--end_year ${END_YEAR}"
+            )
+        ),
+
     }
 )
+
+
+def generate_time_slices():
+    mode = env["CATEGORY_MODE"]
+    start_year = env["STARTING_YEAR"]
+    end_year = env["ENDING_YEAR"]
+    time_slices = []
+
+    if mode == "INTERVAL":
+        interval = env["SPLIT_INTERVAL"]
+    elif mode == "TOTAL":
+        total_splits = env["TOTAL_SPLITS"]
+        interval = (env["ENDING_YEAR"] - env["STARTING_YEAR"]) // total_splits
+    else: 
+        raise ValueError("Invalid CATEGORY_MODE. Use 'INTERVAL' or 'TOTAL'.")
+    
+    for year in range(start_year, end_year + 1, interval):
+        time_slices.append((str(year), str(year + interval)))
+    
+    return time_slices
+
+
+if len(env["TIME_SLICES"]) == 0:
+    env["TIME_SLICES"] = generate_time_slices()
 
 
 if not env["USE_DATES_FILE"]:
     max_date = max([int(end) for (start, end) in env["TIME_SLICES"]])
     input = env.GenerateQuery(   
         source= None,
-        target = "${WORK_DIR}/authors.txt", 
+        target = "${WORK_DIR}/total/authors.txt", 
         MAX_CUTOFF = max_date,
         **cpu_task_config(env,"GenerateQuery", "00:30:00", "4GB")
     )
     query_res = env.QueryWD(     
         source = input, 
-        target = "${WORK_DIR}/author_query.jsonl", 
+        target = "${WORK_DIR}/total/author_query.jsonl", 
         **cpu_task_config(env,"QueryWD", "00:30:00", "24GB")
     )
 
     gb_authors = env.GBAuthorFuzzy(
         source = query_res, 
-        target = "${WORK_DIR}/gb_authors.jsonl", 
+        target = "${WORK_DIR}/total/gb_authors.jsonl", 
         **cpu_task_config(env,"GBAuthorFuzzy", "00:30:00", "24GB")
     )
 
     if env["USE_INFERENCE"]:
         gb_authors = env.AttributeDates(
             source = gb_authors, 
-            target = "${WORK_DIR}/gb_authors_dates.jsonl", 
+            target = "${WORK_DIR}/total/gb_authors_dates.jsonl", 
             **gpu_task_config(env,"AttributeDates", "12:30:00", "24GB")
         )
 else:
@@ -173,78 +226,114 @@ if env["USE_CA"]:
 
 generated_data = {}
 
-for time_slice in env["TIME_SLICES"]:
-    trains = []
-    devs = []
-    tests = []
-    time_slice_directory = f"{time_slice[0]}_{time_slice[1]}"
-    env["WORK_DIR"] = os.path.join(env["ORIGINAL_WORK_DIR"], time_slice_directory)
 
-    gb_authors_filtered = env.FilterAndSampleWorks(  
-        source = gb_authors, 
-        target = "${WORK_DIR}/gb_authors_dates_filtered.jsonl",
-        WORK_CUTOFF_START = time_slice[0],
-        WORK_CUTOFF_END = time_slice[1],
-        **cpu_task_config(env,"FilterAndSampleWorks", "00:30:00", "24GB")
+data = []
+env["WORK_DIR"] = env["ORIGINAL_WORK_DIR"]
+
+gb_authors_filtered = env.FilterAndSampleWorks(  
+    source = gb_authors, 
+    target = "${WORK_DIR}/total/gb_authors_dates_filtered.jsonl",
+    WORK_CUTOFF_START = 1750,
+    WORK_CUTOFF_END = 1940,
+    **cpu_task_config(env,"FilterAndSampleWorks", "00:30:00", "24GB")
+)
+
+if env["USE_CA"]:
+    ca_slice = env.CollateCA(
+        source = [ca_train_orig, ca_test_orig, ca_dev_orig],
+        target = "${WORK_DIR}/total/ca_slice.jsonl",
+        WORK_CUTOFF_START = 1750,
+        WORK_CUTOFF_END = 1940,
+        **cpu_task_config(env,"CollateCA", "00:30:00", "24GB")
     )
+    data.append(("ca", ca_slice))
 
-    if env["USE_CA"]:
-        ca_slice = env.CollateCA(
-            source = [ca_train_orig, ca_test_orig, ca_dev_orig],
-            target = "${WORK_DIR}/ca_slice.jsonl",
-            WORK_CUTOFF_START = time_slice[0],
-            WORK_CUTOFF_END = time_slice[1],
-            **cpu_task_config(env,"FilterAndSampleWorks", "00:30:00", "24GB")
+
+gb_authors_sorted = env.ExtractWorks(
+    source = gb_authors_filtered,
+    target = "${WORK_DIR}/total/gb_authors_sorted.jsonl",
+    **cpu_task_config(env,"SortWorks", "00:30:00", "24GB")
+)
+
+authors_and_extracted_works = env.ExtractAuthorWorksFromPG(
+    source = gb_authors_sorted,
+    target = "${WORK_DIR}/total/authors_and_extracted_works.jsonl",
+    **cpu_task_config(env, "ExtractAuthorWorksFromPG", "00:30:00", "24GB")
+)
+
+extracted_structures = env.ExtractDocStructures(
+    source = authors_and_extracted_works,
+    target = "${WORK_DIR}/total/extracted_structures.jsonl",
+    **cpu_task_config(env,"ExtractDocStructures", "00:30:00", "24GB")
+)
+
+data.append(("guttenberg", extracted_structures))
+
+
+all_train = []
+all_dev = []
+all_test = []
+all_slices = []
+
+for start_data, end_data in env["TIME_SLICES"]:
+    start_year = int(start_data)
+    end_year = int(end_data)
+
+    trains, devs, tests = [], [], []
+    for data_type, data_set in data:
+        sample_timerange = env.SampleTime(
+            source = data_set,
+            target = f"${{WORK_DIR}}/{start_data}_{end_data}/{data_type}.data.jsonl",
+            START_YEAR = start_year,
+            END_YEAR = end_year,
+            **cpu_task_config(env,"SampleTime", "00:30:00", "24GB")
         )
-        ca_train, ca_dev, ca_test = env.TrainingSplit(
-            source = ca_slice,
-            target = ["${WORK_DIR}/ca.data.train.json", "${WORK_DIR}/ca.data.dev.json", "${WORK_DIR}/ca.data.test.json"],
+        train, dev, test = env.TrainingSplit(
+            source = sample_timerange,
+            target = [
+                f"${{WORK_DIR}}/{start_data}_{end_data}/{data_type}.data.train.json",
+                f"${{WORK_DIR}}/{start_data}_{end_data}/{data_type}.data.dev.json",
+                f"${{WORK_DIR}}/{start_data}_{end_data}/{data_type}.data.test.json"
+            ],
+            TRAIN_PORTION = env["TRAIN_PORTION"],
+            DEV_PORTION = env["DEV_PORTION"],
+            TEST_PORTION = env["TEST_PORTION"],
+            SPLIT_LEVEL = env["SPLIT_LEVEL"],
+            SPLIT_STYLE = env["SPLIT_STYLE"],
+            RANDOM_SEED = env["RANDOM_SEED"],
             **cpu_task_config(env,"TrainingSplit", "00:30:00", "24GB")
         )
-        trains.append(ca_train)
-        devs.append(ca_dev)
-        tests.append(ca_test)
-
-
-    authors_and_extracted_works = env.ExtractAuthorWorksFromPG(
-        source = gb_authors_filtered,
-        target = "${WORK_DIR}/authors_and_extracted_works.jsonl",
-        **cpu_task_config(env, "ExtractAuthorWorksFromPG", "00:30:00", "24GB")
-    )
-
-    extracted_structures = env.ExtractDocStructures(
-        source = authors_and_extracted_works,
-        target = "${WORK_DIR}/extracted_structures.jsonl",
-        **cpu_task_config(env,"ExtractDocStructures", "00:30:00", "24GB")
-    )
-
-    gb_train, gb_dev, gb_test = env.TrainingSplit(
-        source = extracted_structures,
-        target = ["${WORK_DIR}/gb.data.train.json", "${WORK_DIR}/gb.data.dev.json", "${WORK_DIR}/gb.data.test.json"],
-        **cpu_task_config(env,"TrainingSplit", "00:30:00", "24GB")
-    )
-    trains.append(gb_train)
-    devs.append(gb_dev)
-    tests.append(gb_test)
-
+        trains.append(train)
+        devs.append(dev)
+        tests.append(test)
     
     train, dev, test = env.CollateSplits(
         source = [trains,devs,tests],
-	TRAINS = trains,
-	DEVS = devs,
-	TESTS = tests,
-        target = ["${WORK_DIR}/data.train", "${WORK_DIR}/data.dev", "${WORK_DIR}/data.test"],
+        TRAINS = trains,
+        DEVS = devs,
+        TESTS = tests,
+        SHUFFLE = 0,
+        SORT = 1,
+        target = [  f"${{WORK_DIR}}/{start_data}_{end_data}/data.train", 
+                    f"${{WORK_DIR}}/{start_data}_{end_data}/data.dev", 
+                    f"${{WORK_DIR}}/{start_data}_{end_data}/data.test"],
         **cpu_task_config(env,"CollateSplits", "00:30:00", "24GB")
     )
+    all_train.append(train)
+    all_dev.append(dev)
+    all_test.append(test)
+    all_slices.append((start_data, end_data))
+
+
     
-    generated_data[time_slice_directory] = {
-        "train": train,
-        "dev": dev,
-        "test": test
-    }
-    print(train, dev, test)
-print("Done generating data files.")
-print(generated_data)
+
+generated_data = {
+    "train": all_train,
+    "dev": all_dev,
+    "test": all_test,
+    "slices": all_slices
+}
+
 Export(
         {
             "training_data" : generated_data,
