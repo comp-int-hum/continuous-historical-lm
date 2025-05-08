@@ -110,6 +110,7 @@ pretrained_results = {}
 
 all_training_sets = training_data["train"]
 all_dev_sets = training_data["dev"]
+all_test_sets = training_data["test"]
 all_time_slices = training_data["slices"]
 
 
@@ -121,8 +122,9 @@ tokenizer = env.TrainTokenizer(
 
 all_tokenized_training_sets = []
 all_tokenized_dev_sets = []
+all_tokenized_test_sets = []
 
-for train, dev, slice in zip(all_training_sets, all_dev_sets, all_time_slices):
+for train, dev, test, slice in zip(all_training_sets, all_dev_sets, all_test_sets, all_time_slices):
     env["WORK_DIR"] = os.path.join(env["ORIGINAL_WORK_DIR"], f"{slice[0]}_{slice[1]}")
     train_data = env.TokenizeSplit(
         source = [train, tokenizer],
@@ -134,8 +136,14 @@ for train, dev, slice in zip(all_training_sets, all_dev_sets, all_time_slices):
         target = f"{env['WORK_DIR']}/dev.pt",
         **cpu_task_config(env, "TokenizeSplit", "01:30:00", "24GB")
     )
+    test_data = env.TokenizeSplit(
+        source = [test, tokenizer],
+        target = f"{env['WORK_DIR']}/test.pt",
+        **cpu_task_config(env, "TokenizeSplit", "01:30:00", "24GB")
+    )
     all_tokenized_training_sets.append(train_data)
     all_tokenized_dev_sets.append(dev_data)
+    all_tokenized_test_sets.append(test_data)
 
 teacher_1 = None
 teacher_2 = None
@@ -180,75 +188,42 @@ for train_data, dev_data, slice in zip(all_tokenized_training_sets, all_tokenize
         **gpu_task_config(env, f"{slice[0]}_{slice[1]}_S", "06:30:00", "24GB")
     )
 
-    """student_eval = env.Evaluate(
-        source = [all_tokenized_dev_sets, tokenizer, student],
-        EVAL_SETS = all_tokenized_dev_sets,
+    student_eval = env.Evaluate(
+        source = [all_tokenized_test_sets, tokenizer, student],
+        EVAL_SETS = all_tokenized_test_sets,
         TOKENIZER = tokenizer,
         CONFIG = env["STUDENT_CONFIG"],
         RANDOM_SEED = env["RANDOM_SEED"],
         MODEL = student,
         target =f"{env['WORK_DIR']}/student_eval.jsonl",
+        **gpu_task_config(env, f"{slice[0]}_{slice[1]}_EV_S", "03:30:00", "24GB")
     )
     teacher_1_eval = env.Evaluate(
-        source = [all_tokenized_dev_sets, tokenizer, teacher_1],
-        EVAL_SETS = all_tokenized_dev_sets,
+        source = [all_tokenized_test_sets, tokenizer, teacher_1],
+        EVAL_SETS = all_tokenized_test_sets,
         TOKENIZER = tokenizer,
         CONFIG = env["TRAINER_CONFIG_1"],
         RANDOM_SEED = env["RANDOM_SEED"],
         MODEL = teacher_1,
         target = f"{env['WORK_DIR']}/teacher_1_eval.jsonl",
+        **gpu_task_config(env, f"{slice[0]}_{slice[1]}_EV_T1", "03:30:00", "24GB")
     )
     teacher_2_eval = env.Evaluate(
-        source = [all_tokenized_dev_sets, tokenizer, teacher_2],
-        EVAL_SETS = all_tokenized_dev_sets,
+        source = [all_tokenized_test_sets, tokenizer, teacher_2],
+        EVAL_SETS = all_tokenized_test_sets,
         TOKENIZER = tokenizer,
         CONFIG = env["TRAINER_CONFIG_2"],
         RANDOM_SEED = env["RANDOM_SEED"],
         MODEL = teacher_2,
         target = f"{env['WORK_DIR']}/teacher_2_eval.jsonl",
-    )"""
-
-
-    # If pre_pretraining is enabled, we run it first
-
-if env["RUN_PRE_PRETRAINING"]:
-    env["WORK_DIR"] = os.path.join(env["ORIGINAL_WORK_DIR"], "pre_pretraining")
-    pre_pretraining_train = training_data["pre_pretraining"]["train"]
-    pre_pretraining_dev = training_data["pre_pretraining"]["dev"]
-
-    pre_pretraining_train_data = env.TokenizeSplit(
-        source = [train, tokenizer],
-        target = f"{env['WORK_DIR']}/train.pt",
-        **cpu_task_config(env, "TokenizeSplit", "01:30:00", "24GB")
-    )
-    pre_pretraining_dev_data = env.TokenizeSplit(
-        source = [pre_pretraining_dev, tokenizer],
-        target = f"{env['WORK_DIR']}/dev.pt",
-        **cpu_task_config(env, "TokenizeSplit", "01:30:00", "24GB")
+        **gpu_task_config(env, f"{slice[0]}_{slice[1]}_EV_T2", "03:30:00", "24GB")
     )
 
-    pre_pretraining_teacher1 = env.TrainTeacher(
-        source = [pre_pretraining_train_data, pre_pretraining_dev_data, tokenizer],
-        target = Dir(f"{env['WORK_DIR']}/teacher"),
-        CONFIG = env["TRAINER_CONFIG_1"],
-        WANDB_NAME = "PrePretraining_Teacher1",
-        **gpu_task_config(env, "TrainTeacher1", "03:30:00", "24GB")
-    )
-    pre_pretraining_teacher2 = env.TrainTeacher(
-        source = [pre_pretraining_train_data, pre_pretraining_dev_data, tokenizer],
-        target = Dir(f"{env['WORK_DIR']}/teacher_2"),
-        CONFIG = env["TRAINER_CONFIG_2"],
-        WANDB_NAME = "PrePretraining_Teacher2",
-        RANDOM_SEED = env["RANDOM_SEED"] + 1,
-        **gpu_task_config(env, "TrainTeacher2", "03:30:00", "24GB")
-    )
-
-pretrained_results[slice] = {
-    "tokenizer": tokenizer,
-    "teacher_1": teacher_1,
-    "teacher_2": teacher_2,
-    "student": student
-}
+    pretrained_results[slice] = {
+        "teacher_1": teacher_1,
+        "teacher_2": teacher_2,
+        "student": student
+    }
 
 print("Done generating pretrained models.")
 Export(

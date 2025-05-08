@@ -88,6 +88,12 @@ if __name__ == "__main__":
     if args.lr:
         config['training']['lr'] = args.lr
 
+    if args.last_checkpoint is not None:
+        # Last checkpoint is the directory of the trainer state:
+        trainer_state = TrainerState.load_from_json(os.path.join(args.last_checkpoint, "trainer_state.json"))
+        # get best checkpoint from the trainer state
+        args.last_checkpoint = trainer_state.best_model_checkpoint
+
     # Dynamic Model Configuration
     if args.last_checkpoint is None:
         print("Creating student model from config")
