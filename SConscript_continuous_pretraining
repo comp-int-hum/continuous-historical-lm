@@ -62,7 +62,7 @@ env = Environment(
             action = (
                 "python 1_training/scripts/train_teacher.py "
                 "--train_data ${TRAIN_DATA} "
-                "--eval_data_sets ${EVAL_SETS} "
+                "--eval_data_set ${EVAL_SET} "
                 "--tokenizer_path ${TOKENIZER} "
                 "--config ${CONFIG} "
                 "--random_seed ${RANDOM_SEED} "
@@ -77,7 +77,7 @@ env = Environment(
             action = (
                 "python 1_training/scripts/distill_train_student.py "
                 "--train_data ${TRAIN_DATA} "
-                "--eval_data_sets ${EVAL_SETS} "
+                "--eval_data_set ${EVAL_SET} "
                 "--tokenizer_path ${TOKENIZER} "
                 "--teacher_dir_1 ${TEACHER1} "
                 "--teacher_dir_2 ${TEACHER2} "
@@ -144,42 +144,43 @@ student = None
 for train_data, dev_data, slice in zip(all_tokenized_training_sets, all_tokenized_dev_sets, all_time_slices):
     env["WORK_DIR"] = os.path.join(env["ORIGINAL_WORK_DIR"], f"{slice[0]}_{slice[1]}")
     teacher_1 = env.TrainTeacher(
-        source = [train_data, all_tokenized_dev_sets, tokenizer] + ([teacher_1] if teacher_1 else []),
+        source = [train_data, dev_data, tokenizer] + ([teacher_1] if teacher_1 else []),
         PREVIOUS_CHECKPOINT = teacher_1,
         TRAIN_DATA = train_data,
-        EVAL_SETS = all_tokenized_dev_sets,
+        EVAL_SET = dev_data,
         TOKENIZER = tokenizer,
         target = Dir(f"{env['WORK_DIR']}/teacher_1"),
         CONFIG = env["TRAINER_CONFIG_1"],
-        WANDB_NAME = f"Teacher_1",
+        WANDB_NAME = f"Teacher_1_{slice[0]}_{slice[1]}",
         **gpu_task_config(env, f"{slice[0]}_{slice[1]}_T1", "03:30:00", "24GB")
     )
     teacher_2 = env.TrainTeacher(
-        source = [train_data, all_tokenized_dev_sets, tokenizer] + ([teacher_2] if teacher_2 else []),
+        source = [train_data, dev_data, tokenizer] + ([teacher_2] if teacher_2 else []),
         TRAIN_DATA = train_data,
-        EVAL_SETS = all_tokenized_dev_sets,
+        EVAL_SET = dev_data,
         TOKENIZER = tokenizer,
         PREVIOUS_CHECKPOINT = teacher_2,
         target = Dir(f"{env['WORK_DIR']}/teacher_2"),
         CONFIG = env["TRAINER_CONFIG_2"],
-        WANDB_NAME = f"Teacher_2",
+        WANDB_NAME = f"Teacher_2_{slice[0]}_{slice[1]}",
         RANDOM_SEED = env["RANDOM_SEED"] + 1,
         **gpu_task_config(env, f"{slice[0]}_{slice[1]}_T2", "03:30:00", "24GB")
     )
     student = env.DistillTrainStudent(
-        source = [train_data, tokenizer, teacher_1, teacher_2] + ([student] if student else []),
+        source = [train_data,dev_data, tokenizer, teacher_1, teacher_2] + ([student] if student else []),
         TEACHER1 = teacher_1,
         TEACHER2 = teacher_2,
         TRAIN_DATA = train_data,
+        EVAL_SET = dev_data,
         TOKENIZER = tokenizer,
         PREVIOUS_CHECKPOINT = student,
         target = Dir(f"{env['WORK_DIR']}/student"),
         CONFIG = env["STUDENT_CONFIG"],
-        WANDB_NAME = f"Student",
+        WANDB_NAME = f"Student_{slice[0]}_{slice[1]}",
         **gpu_task_config(env, f"{slice[0]}_{slice[1]}_S", "06:30:00", "24GB")
     )
 
-    student_eval = env.Evaluate(
+    """student_eval = env.Evaluate(
         source = [all_tokenized_dev_sets, tokenizer, student],
         EVAL_SETS = all_tokenized_dev_sets,
         TOKENIZER = tokenizer,
@@ -188,7 +189,7 @@ for train_data, dev_data, slice in zip(all_tokenized_training_sets, all_tokenize
         MODEL = student,
         target =f"{env['WORK_DIR']}/student_eval.jsonl",
     )
-    """teacher_1_eval = env.Evaluate(
+    teacher_1_eval = env.Evaluate(
         source = [all_tokenized_dev_sets, tokenizer, teacher_1],
         EVAL_SETS = all_tokenized_dev_sets,
         TOKENIZER = tokenizer,

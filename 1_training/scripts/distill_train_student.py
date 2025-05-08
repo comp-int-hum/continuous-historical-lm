@@ -7,7 +7,8 @@ from transformers import (
     TrainingArguments,
     DataCollatorForLanguageModeling,
     AutoModelForCausalLM,
-    TrainerState
+    TrainerState,
+    EarlyStoppingCallback
 )
 import torch
 import torch.nn as nn
@@ -34,7 +35,7 @@ from transformers import TrainerCallback, TrainerControl
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_data", help="Path to the training data")
-    #parser.add_argument("--eval_data_sets", nargs="+", help="Path to the evaluation data")
+    parser.add_argument("--eval_data_set", help="Path to the evaluation data")
     parser.add_argument("--tokenizer_path", help="Path to the tokenizer")
     # teacher models
     parser.add_argument("--teacher_dir_1", help="Path to the first teacher model")
@@ -113,8 +114,13 @@ if __name__ == "__main__":
         )
     print("Student device:", student.device)
     print(student.device)
-    train_dataset = GBDataset(args.train_data, config['data']['seq_length'])
+    train_dataset = GBDataset(args.train_data, config['data']['seq_length'], random_chunk=True)
     token_count = len(train_dataset) * config['data']['seq_length']
+
+    full_eval_dataset = GBDataset(args.eval_data_set, config['data']['seq_length'], offset=0)
+    eval_samples = min(config['data']['eval_samples'], len(full_eval_dataset))
+    eval_indices = sample(range(len(full_eval_dataset)), eval_samples)
+    eval_dataset = Subset(full_eval_dataset, eval_indices)
 
     teacher1_path = args.teacher_dir_1
     teacher2_path = args.teacher_dir_2
@@ -134,7 +140,7 @@ if __name__ == "__main__":
 
     if args.use_wandb:
         wandb.login()
-        wandb.init(project=args.wandb_project, name=args.wandb_name, id = args.wandb_name, resume="allow")
+        wandb.init(project=args.wandb_project, name=args.wandb_name, config=config)
 
 
     output_dir = args.output_dir
@@ -143,15 +149,21 @@ if __name__ == "__main__":
 
     total_steps = len(train_dataset) // (per_device_bsz * accumulation_steps)
 
-    max_steps = total_steps
+    epochs_so_far = 0
     if args.last_checkpoint is not None:
         trainer_state = TrainerState.load_from_json(os.path.join(args.last_checkpoint, "trainer_state.json"))
-        max_steps += trainer_state.global_step
+        global_steps = trainer_state.global_step
+        current_epoch = global_steps // total_steps
+        epochs_so_far = current_epoch
         print(f"trainer state global steps: {trainer_state.global_step}")
-        print(f"max steps: {max_steps}")
+        trainer_state.best_metric = float('inf')
+        trainer_state.save_to_json(os.path.join(args.last_checkpoint, "trainer_state.json"))
+
+    max_epoch = epochs_so_far + config['training']['num_epochs']
     print(f"Total training steps: {total_steps}")
     print(f"per device batch size: {per_device_bsz}")
     print(f"accumulation steps: {accumulation_steps}")
+    print(f"epochs so far: {epochs_so_far}")
 
 
     training_args = DistillationTrainingArguments(
@@ -167,10 +179,20 @@ if __name__ == "__main__":
         alpha=float(config['training']['alpha']),
         temperature=float(config['training']['temperature']),
         logging_steps=20,
-        save_only_model=True,
-        max_steps=max_steps,
+        save_total_limit=2,
+        num_train_epochs=max_epoch,
+        ignore_data_skip   = True,
+        save_strategy= "epoch", 
+        evaluation_strategy= "epoch",
+        logging_strategy= "steps",
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
     )
 
+    early_stop = EarlyStoppingCallback(
+        early_stopping_patience   = 1,
+        early_stopping_threshold  = 0.0,
+    )
 
     trainer = DistillationTrainer(
             student,
@@ -178,6 +200,8 @@ if __name__ == "__main__":
             teacher_models=teachers,
             data_collator=data_collator,
             train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            callbacks=[early_stop],
         )
 
     if args.last_checkpoint is not None:

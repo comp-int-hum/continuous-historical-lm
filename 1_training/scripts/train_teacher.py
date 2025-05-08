@@ -5,7 +5,7 @@ from transformers import (
     TrainerCallback, AutoModelForCausalLM,
     TrainerState
 )
-from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling
+from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling, EarlyStoppingCallback
 from transformers import GPT2TokenizerFast
 from torch.utils.data import Subset
 from random import sample, seed
@@ -24,7 +24,7 @@ from torch.profiler import profile, record_function, ProfilerActivity
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_data", type=str, default=None, help="Path to the training data")
-    parser.add_argument("--eval_data_sets", type=str, nargs="+", default=[], help="Path to the evaluation data sets")
+    parser.add_argument("--eval_data_set", type=str, default=[], help="Path to the evaluation data sets")
     parser.add_argument("--tokenizer_path", type=str, default=None, help="Path to the tokenizer")
     # model parameters
     parser.add_argument("--config", type=str, default="./config/llama-360M.yaml", help="Configuration file path")
@@ -53,7 +53,12 @@ if __name__ == "__main__":
 
     set_seed(args.random_seed)
 
-    train_dataset = GBDataset(args.train_data, config['data']['seq_length'], random_chunk=False)
+    if args.use_wandb:
+        wandb.login()
+        wandb.init(project=args.wandb_project, name=args.wandb_name, config=config)
+
+
+    train_dataset = GBDataset(args.train_data, config['data']['seq_length'], random_chunk=True)
 
     if config['training'].get('gpus', None) is not None:
         import os
@@ -65,14 +70,12 @@ if __name__ == "__main__":
 
     model_year = tuple(args.train_data.split("/")[-2].split("_"))
 
-    all_eval_datasets = {}
-    for data_set in args.eval_data_sets:
-        full_eval_dataset = GBDataset(data_set, config['data']['seq_length'], offset=0)
-        eval_samples = min(config['data']['eval_samples'], len(full_eval_dataset))
-        eval_indices = sample(range(len(full_eval_dataset)), eval_samples)
-        eval_dataset = Subset(full_eval_dataset, eval_indices)
-        years = tuple(data_set.split("/")[-2].split("_"))
-        all_eval_datasets[years] = eval_dataset
+    full_eval_dataset = GBDataset(args.eval_data_set, config['data']['seq_length'], offset=0)
+    eval_samples = min(config['data']['eval_samples'], len(full_eval_dataset))
+    eval_indices = sample(range(len(full_eval_dataset)), eval_samples)
+    eval_dataset = Subset(full_eval_dataset, eval_indices)
+
+    print(f"eval_samples = {len(eval_dataset)}")
 
     tokenizer = GPT2TokenizerFast.from_pretrained(args.tokenizer_path)
     tokenizer.bos_token = "<s>"
@@ -143,73 +146,64 @@ if __name__ == "__main__":
     print(f"cuda available: {torch.cuda.is_available()}")
     print(f"training length: {len(train_dataset)}")
 
-    max_steps = total_steps
+    epochs_so_far = 0
     if args.last_checkpoint is not None:
         trainer_state = TrainerState.load_from_json(os.path.join(args.last_checkpoint, "trainer_state.json"))
-        max_steps += trainer_state.global_step
+        global_steps = trainer_state.global_step
+        current_epoch = global_steps // total_steps
+        epochs_so_far = current_epoch
+        print(f"trainer state global steps: {trainer_state.global_step}")
+        trainer_state.best_metric = float('inf')
+        trainer_state.save_to_json(os.path.join(args.last_checkpoint, "trainer_state.json"))
+
+    max_epoch = epochs_so_far + config['training']['num_epochs']
+    print(f"Total training steps: {total_steps}")
+    print(f"per device batch size: {per_device_bsz}")
+    print(f"accumulation steps: {accumulation_steps}")
+    print(f"epochs so far: {epochs_so_far}")
     
     training_args = TrainingArguments(
-        max_steps=max_steps,
         output_dir=output_dir,
         gradient_accumulation_steps=accumulation_steps,
         per_device_train_batch_size=per_device_bsz,
         per_device_eval_batch_size=per_device_bsz,
+        report_to="wandb",
         warmup_steps=config['training']['warmup_steps'], 
         lr_scheduler_type="cosine",
         learning_rate=float(config['training']['lr']),
         fp16=config['training']['fp16'],
-        load_best_model_at_end=False,
-        torch_compile = config['training'].get('torch_compile', False),
+        weight_decay=float(config['training']['weight_decay']),
         logging_steps=20,
+        save_total_limit=2,
+        num_train_epochs=max_epoch,
+        ignore_data_skip   = True,
+        save_strategy= "epoch", 
+        evaluation_strategy= "epoch",
+        logging_strategy= "steps",
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        torch_compile = config['training'].get('torch_compile', False),
     )
-
+    early_stop = EarlyStoppingCallback(
+        early_stopping_patience   = 1,
+        early_stopping_threshold  = 0.0,
+    )
 
     trainer = Trainer(
         model=model,
         args=training_args,
         data_collator=data_collator,
         train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        callbacks=[early_stop],
     )
     
 
-    if args.use_wandb:
-        wandb.login()
-        wandb.init(project=args.wandb_project, name=args.wandb_name, config=config, id = args.wandb_name, resume="allow")
 
     if args.last_checkpoint is not None:
         trainer.train(resume_from_checkpoint=args.last_checkpoint)
     else:
         trainer.train()
-    
-    if args.use_wandb:
-        try:
-            prev_art = wandb.use_artifact("eval_results:latest")
-            eval_table = prev_art.get("eval_results")
-            print(f"Loaded {len(eval_table.data)} rows from previous artifact.")
-        except wandb.errors.CommError:
-            # First time: create a fresh Table
-            columns = ["eval_start_year", "eval_end_year", "eval_loss", "model_start_year", "model_end_year", "model_name"]
-            eval_table = wandb.Table(columns=columns)
-        #print(eval_table)
-    for eval_years, eval_dataset in all_eval_datasets.items():
-        print(f"Evaluating on {eval_years} dataset")
-        eval_results = trainer.evaluate(eval_dataset=eval_dataset)
-        print(f"Evaluation results for {eval_years}: {eval_results}")
-        if args.use_wandb:
-            eval_table.add_data(
-                eval_years[0], 
-                eval_years[1], 
-                eval_results['eval_loss'], 
-                model_year[0],
-                model_year[1],
-                args.wandb_name
-            )
-
-    if args.use_wandb:
-        #wandb.log({f"eval_results": eval_table}, step=trainer.state.global_step)
-        new_art = wandb.Artifact(name="eval_results", type="evaluation_table")
-        new_art.add(eval_table, "eval_results")
-        wandb.log_artifact(new_art)
 
     trainer.save_model(output_dir)
     trainer.save_state()
